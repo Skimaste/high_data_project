@@ -1,8 +1,15 @@
 import numpy as np
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+
+
+def sigmoid(z):
+    z = np.clip(z, -500.0, 500.0)
+    return 1.0 / (1.0 + np.exp(-z))
 
 
 def nr_logistic(X, y, maxit=25, tol=1e-10):
@@ -10,7 +17,7 @@ def nr_logistic(X, y, maxit=25, tol=1e-10):
 
     for _ in range(maxit):
         beta_old = beta.copy()
-        p = 1.0 / (1.0 + np.exp(-(X @ beta)))
+        p = sigmoid(X @ beta)
         w = p * (1.0 - p)
         xtwx = X.T @ (w[:, None] * X)
         score = X.T @ (y - p)
@@ -20,7 +27,7 @@ def nr_logistic(X, y, maxit=25, tol=1e-10):
             delta, *_ = np.linalg.lstsq(xtwx, score, rcond=None)
         beta = beta + delta
 
-        if np.linalg.norm(beta - beta_old) < tol:
+        if np.max(np.abs(beta - beta_old)) < tol:
             break
 
     return beta
@@ -34,7 +41,7 @@ def nr_logistic_ridge(X, y, lambda_, maxit=25, tol=1e-10):
 
     for _ in range(maxit):
         beta_old = beta.copy()
-        p = 1.0 / (1.0 + np.exp(-(X @ beta)))
+        p = sigmoid(X @ beta)
         w = p * (1.0 - p)
         xtwx = X.T @ (w[:, None] * X) + 2.0 * penalty
         score = X.T @ (p - y) + 2.0 * (penalty @ beta)
@@ -44,7 +51,7 @@ def nr_logistic_ridge(X, y, lambda_, maxit=25, tol=1e-10):
             delta, *_ = np.linalg.lstsq(xtwx, score, rcond=None)
         beta = beta - delta
 
-        if np.linalg.norm(beta - beta_old) < tol:
+        if np.max(np.abs(beta - beta_old)) < tol:
             break
 
     return beta
@@ -60,7 +67,7 @@ def nr_logistic_lasso(X, y, lambda_, maxitMM=25, maxitNR=25, tol=1e-10, eps=1e-1
 
         for _ in range(maxitNR):
             beta_old_nr = beta_nr.copy()
-            p = 1.0 / (1.0 + np.exp(-(X @ beta_old_nr)))
+            p = sigmoid(X @ beta_old_nr)
             w = p * (1.0 - p)
 
             lam = lambda_ / np.abs(beta_old)
@@ -79,11 +86,11 @@ def nr_logistic_lasso(X, y, lambda_, maxitMM=25, maxitNR=25, tol=1e-10, eps=1e-1
                 delta, *_ = np.linalg.lstsq(hessian, score, rcond=None)
             beta_nr = beta_old_nr - delta
 
-            if np.linalg.norm(beta_nr - beta_old_nr) < tol:
+            if np.max(np.abs(beta_nr - beta_old_nr)) < tol:
                 break
 
         beta = beta_nr
-        if np.linalg.norm(beta - beta_old) < tol:
+        if np.max(np.abs(beta - beta_old)) < tol:
             break
 
     beta[np.abs(beta) <= tol] = 0.0
@@ -92,8 +99,24 @@ def nr_logistic_lasso(X, y, lambda_, maxitMM=25, maxitNR=25, tol=1e-10, eps=1e-1
 
 def nll(beta, X, y):
     eta = X @ beta
-    p = np.clip(1.0 / (1.0 + np.exp(-eta)), 1e-15, 1.0 - 1e-15)
+    p = np.clip(sigmoid(eta), 1e-15, 1.0 - 1e-15)
     return -np.mean(y * np.log(p) + (1.0 - y) * np.log(1.0 - p))
+
+
+def predict_proba(beta, X):
+    return sigmoid(X @ beta)
+
+
+def evaluate_model(beta, X, y, threshold=0.5):
+    y_prob = predict_proba(beta, X)
+    y_pred = (y_prob >= threshold).astype(int)
+    return {
+        "accuracy": accuracy_score(y, y_pred),
+        "precision": precision_score(y, y_pred, zero_division=0),
+        "recall": recall_score(y, y_pred, zero_division=0),
+        "f1": f1_score(y, y_pred, zero_division=0),
+        "roc_auc": roc_auc_score(y, y_prob),
+    }
 
 
 def cv_ridge(X, y, lambda_seq, k=5, maxit=25, tol=1e-10, seed=None):
@@ -187,48 +210,114 @@ if __name__ == "__main__":
     features = data.columns[1:].tolist()
 
     plt.figure(figsize=(20, 18))
-    sns.heatmap(data.corr(), annot=True, cmap='coolwarm')
-    plt.show()
+    sns.heatmap(data.corr(), annot=False, cmap='coolwarm')
+    plt.tight_layout()
+    plt.savefig("corr_plot.png", dpi=300)
+    plt.close()
+
+    random_state = 43
     
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=random_state,
+        stratify=y,
+    )
+
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
 
 
-    cv_ridge_lambda_seq = np.logspace(-4, 4, 10)
-    best_lambda_ridge, cv_errors_ridge = cv_ridge(X_scaled, y, cv_ridge_lambda_seq, k=5, maxit=25, tol=1e-10, seed=42)
+    cv_ridge_lambda_seq = np.logspace(-1, 1)
+    best_lambda_ridge, cv_errors_ridge = cv_ridge(
+        X_train_scaled,
+        y_train,
+        cv_ridge_lambda_seq,
+        k=5,
+        maxit=25,
+        tol=1e-10,
+        seed=random_state,
+    )
     print("Best Ridge Lambda:", best_lambda_ridge)
 
     #plot cv errors for ridge
     plt.figure(figsize=(8, 6))
     plt.plot(cv_ridge_lambda_seq, cv_errors_ridge, marker='o')
     plt.xscale('log')
+    plt.yscale('log')
     plt.xlabel('Lambda (log scale)')
     plt.ylabel('Cross-Validation Error')
     plt.title('Ridge Regression Cross-Validation Error')
     plt.grid()
-    plt.show()
+    plt.tight_layout()
+    plt.savefig("ridge_cv.png", dpi=300)
+    plt.close()
 
 
-    cv_lasso_lambda_seq = np.logspace(-4, 4, 10)
-    best_lambda_lasso, cv_errors_lasso = cv_lasso(X_scaled, y, cv_lasso_lambda_seq, k=5, maxitMM=25, maxitNR=25, tol=1e-10, eps=1e-12, seed=42)
+    cv_lasso_lambda_seq = np.logspace(-1, 1)
+    best_lambda_lasso, cv_errors_lasso = cv_lasso(
+        X_train_scaled,
+        y_train,
+        cv_lasso_lambda_seq,
+        k=5,
+        maxitMM=25,
+        maxitNR=25,
+        tol=1e-10,
+        eps=1e-12,
+        seed=random_state,
+    )
     print("Best Lasso Lambda:", best_lambda_lasso) 
 
     #plot cv errors for lasso
     plt.figure(figsize=(8, 6))
     plt.plot(cv_lasso_lambda_seq, cv_errors_lasso, marker='o')
     plt.xscale('log')
+    plt.yscale('log')
     plt.xlabel('Lambda (log scale)')
     plt.ylabel('Cross-Validation Error')
     plt.title('Lasso Regression Cross-Validation Error')
     plt.grid()
-    plt.show()
+    plt.tight_layout()
+    plt.savefig("lasso_cv.png", dpi=300)
+    plt.close()
     
 
-    beta_lr = nr_logistic(X_scaled, y)
-    print("Coefficients:", np.round(beta_lr, 4))
+    beta_lr = nr_logistic(X_train_scaled, y_train)
+    beta_ridge = nr_logistic_ridge(X_train_scaled, y_train, best_lambda_ridge)
+    beta_lasso = nr_logistic_lasso(X_train_scaled, y_train, best_lambda_lasso)
 
-    beta_ridge = nr_logistic_ridge(X_scaled, y, best_lambda_ridge)
-    print("Ridge Coefficients:", np.round(beta_ridge, 4))
+    metrics_logit = evaluate_model(beta_lr, X_test_scaled, y_test)
+    metrics_ridge = evaluate_model(beta_ridge, X_test_scaled, y_test)
+    metrics_lasso = evaluate_model(beta_lasso, X_test_scaled, y_test)
 
-    beta_lasso = nr_logistic_lasso(X_scaled, y, best_lambda_lasso)
-    print("Lasso Coefficients:", np.array2string(np.round(beta_lasso, 4), formatter={'float_kind': lambda x: f"{x:.4f}"}))
+    results_df = pd.DataFrame(
+        [
+            {"model": "Logistic (unpenalized)", **metrics_logit},
+            {"model": "Ridge Logistic", **metrics_ridge},
+            {"model": "Lasso Logistic", **metrics_lasso},
+        ]
+    )
+
+    print("\nTest set performance:")
+    print(results_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
+
+    coef_df = pd.DataFrame(
+        {
+            "feature": features,
+            "logistic_coef": beta_lr,
+            "ridge_coef": beta_ridge,
+            "lasso_coef": beta_lasso,
+            "abs_lasso_coef": np.abs(beta_lasso),
+        }
+    ).sort_values("abs_lasso_coef", ascending=False)
+
+    print("\nTop 10 predictors by absolute lasso coefficient:")
+    print(
+        coef_df.loc[:, ["feature", "lasso_coef", "ridge_coef", "logistic_coef"]]
+        .to_string(index=False, float_format=lambda x: f"{x:.4f}")
+    )
+
+    results_df.to_csv("model_performance.csv", index=False)
+    coef_df.to_csv("model_coefficients.csv", index=False)
